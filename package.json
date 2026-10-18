@@ -5,6 +5,15 @@
   "type": "module",
   "main": "index.js",
   "license": "MIT",
+  "author": "annasleepy",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/annasleepy/dsh-bili-interact.git"
+  },
+  "homepage": "https://github.com/annasleepy/dsh-bili-interact#readme",
+  "bugs": {
+    "url": "https://github.com/annasleepy/dsh-bili-interact/issues"
+  },
   "engines": {
     "node": ">=22"
   },
