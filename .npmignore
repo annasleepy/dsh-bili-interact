@@ -1,0 +1,8 @@
+# npm 发布时排除的东西（files 白名单之外再加一层保险）
+__pycache__/
+*.pyc
+*.pyo
+test/
+.tmp*
+*.log
+.DS_Store
