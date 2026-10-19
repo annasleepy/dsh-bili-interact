@@ -49,6 +49,9 @@ function mount(home, config = {}) {
     touch: tools.get('bili_touch'),
     dyn: tools.get('bili_post_dynamic'),
     dm: tools.get('bili_send_dm'),
+    trending: tools.get('bili_trending'),
+    inbox: tools.get('bili_inbox'),
+    favContent: tools.get('bili_fav_content'),
     status: tools.get('bili_touch_status'),
   }
 }
@@ -329,6 +332,19 @@ print(json.dumps({"ok": True, "action": (sys.argv[1] if len(sys.argv) > 1 else N
 
   const stubPlugin = await import(pathToFileURL(join(makeStubPlugin(), 'index.js')).href)
 
+  /** 只读工具用：装一次、只取四个只读/状态工具 */
+  function roMount(home) {
+    process.env.DSH_HOME = home
+    const tools = new Map()
+    stubPlugin.apply({ tools: { register: (x) => tools.set(x.name, x) }, logger: { info: () => {} } }, {})
+    return {
+      trending: tools.get('bili_trending'),
+      inbox: tools.get('bili_inbox'),
+      favContent: tools.get('bili_fav_content'),
+      status: tools.get('bili_touch_status'),
+    }
+  }
+
   await t('正常路径：假 python 返回 ok → 工具 ok、账本 +1、remaining 正确', async () => {
     const home = stubHome('stub1')
     process.env.DSH_HOME = home
@@ -472,6 +488,34 @@ print(json.dumps({"ok": True, "action": (sys.argv[1] if len(sys.argv) > 1 else N
     const r = await tools.get('bili_send_dm').execute({ text: { evil: 1 } })
     assert.equal(r.ok, false)
     assert.match(String(r.error), /字符串/)
+  })
+
+  await t('⭐ 只读工具（trending / inbox）：allowWrite=false 也照跑，不占额度', async () => {
+    const home = stubHome('stub-ro1')
+    writeCfg(home, { allowWrite: false })
+    const m = roMount(home)
+    const r1 = await m.trending.execute({ kind: 'rank', zone: 'technology' })
+    assert.equal(r1.ok, true)
+    const r2 = await m.inbox.execute({})
+    assert.equal(r2.ok, true)
+    const s = await m.status.execute({})
+    assert.equal(s.totalUsed, 0, '只读工具不该记账')
+  })
+
+  await t('只读工具：kind 非法 / zone 与 folder 以 -- 开头 → 直接拒绝', async () => {
+    const home = stubHome('stub-ro2')
+    const m = roMount(home)
+    assert.equal((await m.trending.execute({ kind: 'xxx' })).ok, false)
+    assert.equal((await m.trending.execute({ kind: 'rank', zone: '--x' })).ok, false)
+    assert.equal((await m.favContent.execute({ folder: '--undo' })).ok, false)
+  })
+
+  await t('bili_fav_content：folder 作为第一个位置参数传给 python', async () => {
+    const home = stubHome('stub-ro3')
+    const m = roMount(home)
+    const r = await m.favContent.execute({ folder: 'AI 工具', keyword: 'deepseek' })
+    assert.equal(r.ok, true)
+    assert.equal(r.action, 'fav_content', '假 python 的 action 回显 = argv[1]，说明位置参数没丢')
   })
 
   await t('⭐ 同一视频每日上限：默认 2 次，第 3 次被拒（防被内容诱导后反复动手）', async () => {

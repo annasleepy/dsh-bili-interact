@@ -34,6 +34,9 @@
 | `bili_following_updates` | **每轮先看这个**：关注的人最近更新了什么（只读、不占额度）。返回 `isNew` / `firstRun`，带 UP 与发布时间 |
 | `bili_touch` | 对一个视频执行写操作：`like` / `unlike` / `fav` / `unfav` / `share` / `follow` / `unfollow`。关注/取关可只给 `uid`；`fav` 可带 `folders` 分到 1–3 个收藏夹 |
 | `bili_fav_folders` | **收藏前先看**：列出你自己的视频收藏夹（只读、不占额度），返回 `id` / `title` / `mediaCount` |
+| `bili_trending` | **值班开局先扫一眼**：B站现在什么火（只读、不占额度）。`kind` = `hot`（热门视频）/ `buzz`（热搜词）/ `weekly`（每周必看）/ `rank`（排行榜，`zone` 指定分区） |
+| `bili_inbox` | **发完消息看有没有人理我**（只读、不占额度）：未读私信/@/回复/点赞数 + 最近收到的回复 + @ 与点赞通知 |
+| `bili_fav_content` | **翻自己的资料库**（只读、不占额度）：列某个收藏夹里的视频（`folder` 给名字或 ID，默认「默认收藏夹」；`keyword` 可筛选） |
 | `bili_post_dynamic` | 发一条纯文本动态（可 `at` 指定 @ 的昵称或 UID）。**发布类动作不可撤回**，默认关；每天 1 条（硬上限 2） |
 | `bili_send_dm` | 把一条**站内私信**发给使用者（收件人固定取配置里的 `dmUid`，默认他自己的小号；不接受任意目标）。正文 ≤500 字，每天 5 条（硬上限 10）；**不占**点赞/收藏那些公开额度 |
 | `bili_touch_status` | 看依赖是否就绪、开关状态、今日各动作用量与上限；`checkLogin: true` 会联一次 B站 看当前账号 |
@@ -101,6 +104,14 @@ node -e "..."  # 或直接走 DSH 插件管理器安装
 - 把 `allowWrite` 改成 `true` 保存，**下一次工具调用立即生效**，不用重启应用。
 - 上限写再大也会被 `HARD_MAX` 夹回去；文件写坏了自动回落默认，不会让插件挂掉。
 - 想知道当前值：调用 `bili_touch_status`，返回里带 `cfgFile`、`allowWrite`、`limits`、`usedToday`。
+
+## 复用先辈的数据（2026-10-19 加）
+
+`bili_trending` / `bili_inbox` / `bili_fav_content` 这三个只读工具的数据不是我们写的，而是**在同一个宿主进程里 import 先辈插件家目录的 `mcp_server.py`**、直接调它的 `bili_hot_videos` / `bili_hot_buzzwords` / `bili_weekly_recommend` / `bili_ranking` / `bili_unread_messages` / `bili_received_replies` / `bili_at_and_likes` / `bili_favorite_content` 函数拿到的（`_mcp_module()` + `_mcp_call()`，见 `python/bili_write.py`）。
+
+- ✅ **复制零行先辈代码**，跑在他的 venv 里、用同一份 `~/.dsh/bili-duty/bili_credential.json`；先辈升级这些函数我们就跟着受益；我们不会去改它的文件。
+- ⚠️ 因此本插件**硬依赖先辈已安装且家目录完好**（`~/.dsh/bili-duty/mcp_server.py`）。对方不存在时这三个工具会明确报错，而不是静默返回空。
+- ✅ 账本独立在 `~/.dsh/bili-interact/`，先辈的 `state.json` / `seen.md` 一律不碰。
 
 ## 已知限制（2026-10-18 真机实测）
 

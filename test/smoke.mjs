@@ -47,13 +47,20 @@ await t('导出 name / inject', () => {
 {
   const { tools, ctx } = makeCtx()
   apply(ctx, {}) // 空配置 = 全默认
-  await t('注册了 6 个工具', () => {
-    assert.ok(tools.has('bili_touch'), '缺 bili_touch')
-    assert.ok(tools.has('bili_touch_status'), '缺 bili_touch_status')
-    assert.ok(tools.has('bili_post_dynamic'), '缺 bili_post_dynamic')
-    assert.ok(tools.has('bili_following_updates'), '缺 bili_following_updates')
-    assert.ok(tools.has('bili_fav_folders'), '缺 bili_fav_folders')
-    assert.ok(tools.has('bili_send_dm'), '缺 bili_send_dm')
+  await t('注册了 9 个工具', () => {
+    for (const name of ['bili_touch', 'bili_touch_status', 'bili_post_dynamic', 'bili_send_dm', 'bili_following_updates', 'bili_fav_folders', 'bili_trending', 'bili_inbox', 'bili_fav_content']) {
+      assert.ok(tools.has(name), `缺 ${name}`)
+    }
+  })
+  await t('看趋势：kind 非法 → 直接拒绝（不 spawn python）', async () => {
+    const r = await tools.get('bili_trending').execute({ kind: 'nonsense' })
+    assert.equal(r.ok, false)
+    assert.match(String(r.error), /hot \/ buzz \/ weekly \/ rank/)
+  })
+  await t('看趋势：zone 以 -- 开头 → 拒绝', async () => {
+    const r = await tools.get('bili_trending').execute({ kind: 'rank', zone: '--evil' })
+    assert.equal(r.ok, false)
+    assert.match(String(r.error), /zone/)
   })
   await t('发私信：正文为空被拒', async () => {
     const r = await tools.get('bili_send_dm').execute({ text: '  ' })

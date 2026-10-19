@@ -47,6 +47,9 @@ ACTION_LABEL = {
     "dm": "发私信",
     "following_updates": "查看关注更新",
     "fav_folders": "查看收藏夹",
+    "trending": "看趋势（热门/热搜/每周必看/排行榜）",
+    "inbox": "看有没有人理我（未读/回复/@与点赞）",
+    "fav_content": "看收藏夹里有什么",
 }
 
 
@@ -502,6 +505,145 @@ async def do_dm(cred, text: str, uid: int) -> dict:
     }
 
 
+# ─────────────────── 只读：趋势 / 收件箱 / 收藏夹内容（复用先辈的 mcp_server.py） ───────────────────
+# 这三类能力先辈那份 `~/.dsh/bili-duty/mcp_server.py` 里已经写好了（27 个工具），
+# 我们**不复制它的代码**，只在自己进程里 import 它、调用对应函数（同一个 venv、同一份凭证）。
+# 先辈自己的值班白名单没放行它们，所以值班会话里看不到 —— 这里补上。
+
+def _mcp_module():
+    duty = BASE_DIR
+    if not (duty / "mcp_server.py").exists():
+        raise RuntimeError("找不到先辈的 mcp_server.py（~/.dsh/bili-duty/）—— 这些只读能力依赖先辈插件")
+    if str(duty) not in sys.path:
+        sys.path.insert(0, str(duty))
+    import mcp_server  # noqa: E402  —— 延迟导入：没有先辈时不该影响点赞/收藏这些主功能
+    return mcp_server
+
+
+async def _mcp_call(name: str, **kwargs):
+    fn = getattr(_mcp_module(), name, None)
+    if fn is None:
+        raise RuntimeError(f"先辈的 mcp_server.py 里没有 {name}（版本不同）")
+    try:
+        raw = await fn(**kwargs) if asyncio.iscoroutinefunction(fn) else fn(**kwargs)
+    except TypeError:
+        raw = fn()
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"{name} 返回的不是 JSON：{str(raw)[:200]}") from exc
+    return raw
+
+
+def _trim_video(v) -> dict:
+    """把视频压成"够判断要不要看"的最小字段（省 token：desc/封面/统计细节一律不带）。"""
+    if not isinstance(v, dict):
+        return v
+    out = {}
+    for k in ("bvid", "title", "author", "play", "like", "coin", "duration", "tname", "score"):
+        val = v.get(k)
+        if val is None or val == "":
+            continue
+        out[k] = str(val)[:80] if k == "title" else val
+    return out
+
+
+def _trim_notice(it) -> dict:
+    """通知/回复压条：昵称 + mid + 正文（≤120 字）+ 时间/跳转信息。"""
+    if not isinstance(it, dict):
+        return it
+    u = it.get("user") if isinstance(it.get("user"), dict) else {}
+    inner = it.get("item") if isinstance(it.get("item"), dict) else {}
+    out = {"nickname": u.get("nickname") or it.get("nickname") or "", "mid": u.get("mid") or it.get("mid")}
+    reply_text = (it.get("message") or inner.get("source_content") or inner.get("root_reply_content")
+                  or inner.get("target_reply_content") or it.get("content") or it.get("text"))
+    if reply_text:
+        out["message"] = str(reply_text)[:120]
+    context = inner.get("desc") or inner.get("title") or it.get("title") or it.get("desc") or ""
+    if context and str(context) != str(reply_text):
+        out["context"] = str(context)[:60]  # 「他回复的是哪条东西」的简述
+    for src, keys in ((it, ("reply_time", "time", "ctime", "pub_time", "dynamic_id", "bvid", "uri", "id")),
+                      (inner, ("business", "title", "source_id", "subject_id"))):
+        for k in keys:
+            if src.get(k) not in (None, "", 0):
+                out[k] = src[k]
+    return out
+
+
+async def do_trending(kind: str = "hot", zone: str = "all") -> dict:
+    """热门 / 热搜 / 每周必看 / 排行榜。⚠️ 必须自己截断：原始返回可能上千条（省 token 也省上下文）。"""
+    kind = str(kind or "hot").strip().lower()
+    if kind in ("hot", "热门"):
+        data = await _mcp_call("bili_hot_videos", pn=1, ps=20)
+        vids = [x for x in (data.get("videos") or []) if isinstance(x, dict)]
+        return {"kind": "hot", "data": {"count": len(vids), "videos": [_trim_video(v) for v in vids[:20]]}}
+    if kind in ("buzz", "hot_buzzwords", "热搜"):
+        data = await _mcp_call("bili_hot_buzzwords", page_num=1, page_size=20)
+        words = [str(w.get("name")) for w in (data.get("buzzwords") or []) if isinstance(w, dict) and w.get("name")]
+        return {"kind": "buzz", "data": {"type": (data.get("type") or {}).get("name"), "buzzwords": words[:15]}}
+    if kind in ("weekly", "weekly_hot", "每周必看"):
+        lst = await _mcp_call("bili_weekly_hot")
+        issues = [i for i in (lst.get("list") or []) if isinstance(i, dict)]
+        latest = [{"number": i.get("number"), "name": i.get("name"), "subject": i.get("subject")} for i in issues[:8]]
+        videos = []
+        if latest and latest[0].get("number"):
+            try:
+                vd = await _mcp_call("bili_weekly_hot", week=int(latest[0]["number"]))
+                videos = [_trim_video(v) for v in (vd.get("list") or [])[:20]]
+            except Exception:  # noqa: BLE001  —— 拿不到本期视频不影响期数列表
+                videos = []
+        return {"kind": "weekly", "data": {"issues": latest, "latestVideos": videos}}
+    if kind in ("rank", "ranking", "排行", "排行榜"):
+        data = await _mcp_call("bili_rank", category=str(zone or "all"))
+        vids = [x for x in (data.get("videos") or []) if isinstance(x, dict)]
+        return {"kind": "rank", "data": {"category": data.get("category"), "videos": [_trim_video(v) for v in vids[:30]]}}
+    raise RuntimeError(f"不认识的 kind={kind!r}（可选 hot / buzz / weekly / rank）")
+
+
+async def do_inbox() -> dict:
+    """有没有人理我：未读数 / 收到的回复 / @与点赞。单块失败不拖垮整份。"""
+    out = {"action": "inbox"}
+    for key, name in (
+        ("unread", "bili_unread_messages"),
+        ("replies", "bili_received_replies"),
+        ("at_and_likes", "bili_received_at_and_likes"),
+    ):
+        try:
+            data = await _mcp_call(name)
+        except Exception as exc:  # noqa: BLE001
+            out[key] = {"error": f"{type(exc).__name__}: {exc}"}
+            continue
+        if key == "unread" or not isinstance(data, dict):
+            out[key] = data
+            continue
+        items = data.get("items") if isinstance(data.get("items"), list) else None
+        if items is None:
+            items = data.get("list") if isinstance(data.get("list"), list) else []
+        out[key] = {"count": len(items), "items": [_trim_notice(x) for x in items[:8]]}
+    return out
+
+
+async def do_fav_content(cred, folder: str = "", keyword: str = "") -> dict:
+    """列某个收藏夹里有什么（先按 id/标题解析 media_id，再复用 mcp_server.py）。"""
+    folders = await _folder_list(cred)
+    token = str(folder or "").strip()
+    picked = None
+    if token:
+        picked = next((f for f in folders if str(f.get("id")) == token), None)
+        if picked is None:
+            picked = next((f for f in folders if str(f.get("title") or "").strip() == token), None)
+        if picked is None:
+            names = ", ".join(str(f.get("title")) for f in folders) or "一个都没有"
+            raise RuntimeError(f"没有叫「{token}」的收藏夹（现有：{names}）")
+    elif folders:
+        picked = next((f for f in folders if "默认" in str(f.get("title") or "")), folders[0])
+    else:
+        raise RuntimeError("账号里一个收藏夹都没有")
+    data = await _mcp_call("bili_favorite_content", media_id=int(picked["id"]), page=1, keyword=str(keyword or ""))
+    return {"folder": {"id": picked.get("id"), "title": picked.get("title")}, "data": data}
+
+
 def _flag_int(argv, flag, default, lo, hi):
     """从 argv 里取 `--flag <int>`；没有/不合法就回默认值，并夹在 [lo, hi]。"""
     try:
@@ -564,7 +706,7 @@ def main(argv) -> int:
         if skip_next:
             skip_next = False
             continue
-        if tok in ("--uid", "--limit", "--max-ups", "--at", "--folder", "--max-create"):
+        if tok in ("--uid", "--limit", "--max-ups", "--at", "--folder", "--max-create", "--kind", "--zone", "--keyword"):
             skip_next = True
             continue
         if tok == "--undo":
@@ -600,6 +742,12 @@ def main(argv) -> int:
             out = await do_dynamic(cred, target, at=_flag_str(argv[3:] if action == "dynamic" else argv, "--at"))
         elif action == "dm":
             out = await do_dm(cred, target, uid=uid)
+        elif action == "trending":
+            out = await do_trending(kind=_flag_str(argv, "--kind"), zone=_flag_str(argv, "--zone") or "all")
+        elif action == "inbox":
+            out = await do_inbox()
+        elif action == "fav_content":
+            out = await do_fav_content(cred, folder=target, keyword=_flag_str(argv, "--keyword"))
         elif action == "following_updates":
             out = await do_following_updates(
                 cred,

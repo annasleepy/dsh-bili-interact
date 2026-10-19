@@ -1,6 +1,6 @@
 {
   "name": "dsh-bili-interact",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "dsh-bili-scroll 的伴随插件：给 B站 视频点赞 / 收藏 / 转发 / 关注 / 发动态。写操作默认关，每个动作都有代码级每日硬上限 —— 为了防止大肥鱼沉迷b站。",
   "type": "module",
   "main": "index.js",
