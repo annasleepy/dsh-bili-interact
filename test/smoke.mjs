@@ -40,7 +40,7 @@ let fail = 0
 // ① 插件元信息
 await t('导出 name / inject', () => {
   assert.equal(name, 'bili-interact')
-  assert.deepEqual(inject, ['tools'])
+  assert.deepEqual(inject, ['tools'])  // webServer 走子插件可选挂载（headless 没有 HTTP 服务）
 })
 
 // ② 允许写操作 = 默认关：注册工具 + 拒绝写

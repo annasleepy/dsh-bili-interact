@@ -30,6 +30,8 @@ const defineTool = hostDeps.defineTool
 
 export const name = 'bili-interact'
 export const inject = ['tools']
+// ⭐ webServer 是**可选**依赖：headless profile 没有 HTTP 服务，写成硬依赖会让整个插件 pending。
+//    做法是另挂一个子插件，它 inject webServer —— 服务不在时子插件自己等，不影响工具注册。
 
 /**
  * 🔴 每个字段都要 `.extra('volatile', true)`：DSH 的 settings.update() 只认 volatile 字段。
@@ -725,6 +727,131 @@ export function apply(ctx, config) {
       return out
     },
   })
+
+
+  /* ───────────── HTTP（设置页用，2026-10-19 加） ─────────────
+   * 客户端设置页读 /api/bili-interact/status、写 /api/bili-interact/config。
+   * 写入口只认「显式列出的键」，数值一律夹到硬上限 —— 和工具侧共用同一套 HARD_*，
+   * 不因为有个 UI 就能把上限调上去。
+   */
+  const sendJson = (res, code, obj) => {
+    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify(obj))
+  }
+  const readBody = (req) => new Promise((resolve) => {
+    let data = ''
+    let done = false
+    const finish = (v) => { if (!done) { done = true; resolve(v) } }
+    req.on('data', (c) => { data += c; if (data.length > 200_000) { data = ''; finish({}); req.destroy() } })
+    req.on('end', () => { try { finish(JSON.parse(data || '{}')) } catch { finish({}) } })
+    req.on('error', () => finish({}))
+  })
+
+  const BOOL_KEYS = ['allowWrite', 'allowLike', 'allowFav', 'allowFollow', 'allowShare', 'allowDynamic', 'preferFollowing', 'allowFavFolderCreate']
+  const NUM_LIMIT = {
+    likePerDay: HARD_MAX.like, favPerDay: HARD_MAX.fav, sharePerDay: HARD_MAX.share,
+    followPerDay: HARD_MAX.follow, dynamicPerDay: HARD_MAX.dynamic,
+    favFolderPerDay: HARD_FOLDER_PER_DAY, totalPerDay: HARD_TOTAL, perTargetPerDay: HARD_PER_TARGET,
+    likePerRound: HARD_ROUND.like, favPerRound: HARD_ROUND.fav, sharePerRound: HARD_ROUND.share, followPerRound: HARD_ROUND.follow,
+    roundGapMinutes: 120,
+  }
+
+  const pageStatus = () => {
+    const cfg = liveCfg()
+    const h = health()
+    const data = readLedger()
+    const day = dayKey()
+    const used = {
+      like: usedToday('like', data, day),
+      fav: usedToday('fav', data, day),
+      share: usedToday('share', data, day),
+      follow: usedToday('follow', data, day),
+      dynamic: usedToday('dynamic', data, day),
+    }
+    return {
+      ok: true,
+      ready: h.ready,
+      reason: h.reason,
+      cfgFile: cfg.cfgFile,
+      today: day,
+      switches: { allowWrite: cfg.allowWrite, ...cfg.flags },
+      caps: cfg.caps,
+      round: cfg.round,
+      roundGapMinutes: cfg.roundGapMinutes,
+      usedToday: used,
+      totalUsed: TOTAL_KEYS.reduce((a, k) => a + used[k], 0),
+      usedThisRound: { like: roundCount('like'), fav: roundCount('fav'), share: roundCount('share'), follow: roundCount('follow') },
+      folderUsedToday: usedToday('folder'),
+      folderLimitToday: cfg.caps.folder,
+      hardMax: HARD_MAX,
+      hardTotal: HARD_TOTAL,
+      hardPerTarget: HARD_PER_TARGET,
+      hardRound: HARD_ROUND,
+      hardFolderPerDay: HARD_FOLDER_PER_DAY,
+      todayActions: todayEntries(data, day).slice(-12).map((e) => ({ at: e.at, action: e.action, target: e.target })),
+      base: { python: h.python, credential: h.credential, dshHome: dshHome() },
+    }
+  }
+
+  /** 当前配置文件 + 默认值（设置页一进来要看到全部键） */
+  const pageConfig = () => ({ ...DEFAULTS, ...readFileCfg() })
+
+  /** 合并写入 config.json：只认显式列出的键，数值夹到硬上限 */
+  const writeConfigPatch = (patch) => {
+    let cur = {}
+    try { if (existsSync(configPath)) cur = JSON.parse(readFileSync(configPath, 'utf8')) } catch { cur = {} }
+    const next = { ...cur }
+    for (const k of BOOL_KEYS) {
+      if (!(k in patch)) continue
+      const v = patch[k]
+      if (typeof v === 'boolean') next[k] = v
+      else if (typeof v === 'string' && /^(true|false)$/i.test(v.trim())) next[k] = v.trim().toLowerCase() === 'true'
+    }
+    for (const [k, hard] of Object.entries(NUM_LIMIT)) {
+      if (!(k in patch)) continue
+      const n = typeof patch[k] === 'number' ? patch[k] : Number(patch[k])
+      if (!Number.isFinite(n)) throw new Error(`${k} 不是数字`)
+      const lo = k === 'roundGapMinutes' ? 10 : 0
+      next[k] = Math.floor(Math.max(lo, Math.min(n, hard)))
+    }
+    writeFileSync(configPath, JSON.stringify(next, null, 2) + '\n', 'utf8')
+    return next
+  }
+
+  const handlePage = async (req, res, url) => {
+    const path = url.pathname
+    if (req.method === 'GET' && path === '/api/bili-interact/status') return sendJson(res, 200, pageStatus())
+    if (req.method === 'GET' && path === '/api/bili-interact/config') {
+      return sendJson(res, 200, { ok: true, config: pageConfig() })
+    }
+    if (req.method === 'POST' && path === '/api/bili-interact/config') {
+      const body = await readBody(req)
+      writeConfigPatch(body)
+      log(`设置页改配置：${Object.keys(body).join(', ') || '(空)'}`)
+      return sendJson(res, 200, { ok: true, config: pageConfig() })
+    }
+    return sendJson(res, 404, { ok: false, error: `unknown ${req.method} ${path}` })
+  }
+
+  try {
+    // 子插件：只有 webServer 真的在（desktop）才会激活；headless 里它安静地等，不拖累主插件
+    ctx.plugin({
+      name: 'bili-interact-http',
+      inject: ['webServer'],
+      apply(c) {
+        c.effect(() => c.webServer.register({
+          kind: 'prefix',
+          path: '/api/bili-interact',
+          handler: async (req, res) => {
+            try { await handlePage(req, res, new URL(req.url, 'http://127.0.0.1')) } catch (e) {
+              sendJson(res, 500, { ok: false, error: e?.message ?? String(e) })
+            }
+          },
+        }), 'bili-interact: /api/bili-interact 路由')
+        log('设置页路由已挂载：/api/bili-interact/{status,config}')
+      },
+    })
+  } catch (e) { log(`HTTP 路由没挂上：${e?.message ?? e}`) }
 
   log(`已注册工具 bili_touch / bili_following_updates / bili_fav_folders / bili_post_dynamic / bili_touch_status；allowWrite=${liveCfg().allowWrite}；账号上限：${JSON.stringify(HARD_MAX)}`)
 }
