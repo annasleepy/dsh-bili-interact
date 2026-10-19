@@ -207,6 +207,7 @@ window.__ModuleLoader__.load({
           h(NumRow, { key: 's', label: '转发', note: '硬上限 ' + (hard.share ?? 3), value: cfg.sharePerDay, onSave: (n) => save({ sharePerDay: n }) }),
           h(NumRow, { key: 'fo', label: '关注', note: '硬上限 ' + (hard.follow ?? 10), value: cfg.followPerDay, onSave: (n) => save({ followPerDay: n }) }),
           h(NumRow, { key: 'd', label: '发动态', note: '硬上限 ' + (hard.dynamic ?? 2), value: cfg.dynamicPerDay, onSave: (n) => save({ dynamicPerDay: n }) }),
+          h(NumRow, { key: 'dm', label: '私信简报', note: '硬上限 ' + (st?.hardDmPerDay ?? 10), value: cfg.dmPerDay, onSave: (n) => save({ dmPerDay: n }) }),
           h(NumRow, { key: 't', label: '每日总次数（所有动作合计）', note: '硬上限 ' + (st?.hardTotal ?? 30), value: cfg.totalPerDay, onSave: (n) => save({ totalPerDay: n }) }),
           h(NumRow, { key: 'pt', label: '同一个视频/UP 每天最多', note: '硬上限 ' + (st?.hardPerTarget ?? 5), value: cfg.perTargetPerDay, onSave: (n) => save({ perTargetPerDay: n }) }),
         ]),
@@ -228,6 +229,7 @@ window.__ModuleLoader__.load({
               h('tr', {}, h('td', {}, '转发'), h('td', {}, (used.share ?? 0) + ' / ' + (cap.share ?? 0))),
               h('tr', {}, h('td', {}, '关注'), h('td', {}, (used.follow ?? 0) + ' / ' + (cap.follow ?? 0))),
               h('tr', {}, h('td', {}, '发动态'), h('td', {}, (used.dynamic ?? 0) + ' / ' + (cap.dynamic ?? 0))),
+              h('tr', {}, h('td', {}, '私信简报'), h('td', {}, (used.dm ?? 0) + ' / ' + (cap.dm ?? 0))),
               h('tr', {}, h('td', {}, '合计'), h('td', {}, totalUsed + ' / ' + (cap.total ?? 0))),
             )),
           st && st.todayActions && st.todayActions.length
@@ -238,6 +240,7 @@ window.__ModuleLoader__.load({
         h(Section, { title: '运行状态' }, [
           h('div', { 'data-bi-kv': '' }, st ? ((st.ready ? '✓ 依赖就绪' : '✗ 未就绪：' + (st.reason || '')) + '　·　写操作 ' + (st.switches && st.switches.allowWrite ? '已开' : '已关')) : '加载中…'),
           h('div', { 'data-bi-kv': '' }, 'python：' + (st && st.base ? st.base.python : '…')),
+          h('div', { 'data-bi-kv': '' }, '私信收件人 UID：' + (st && st.dmUid != null ? st.dmUid : '…')),
           h('div', { 'data-bi-kv': '' }, '配置文件：' + (st && st.cfgFile ? st.cfgFile : '…')),
         ]),
         msg ? h('div', { 'data-bi-msg': '', 'data-good': tone === 'good' ? '' : undefined, 'data-warn': tone === 'warn' ? '' : undefined }, msg) : null,

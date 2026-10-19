@@ -23,7 +23,7 @@ const ROOT = dirname(HERE)
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'bi-edge-boot-'))
 const plugin = await import(pathToFileURL(join(ROOT, 'index.js')).href)
 const { apply, __testing } = plugin
-const { HARD_MAX, HARD_PER_TARGET } = __testing
+const { HARD_MAX, HARD_PER_TARGET, HARD_DM_PER_DAY } = __testing
 
 const BVID = 'BV1d8pU6xEZX'
 const results = []
@@ -48,6 +48,7 @@ function mount(home, config = {}) {
     tools,
     touch: tools.get('bili_touch'),
     dyn: tools.get('bili_post_dynamic'),
+    dm: tools.get('bili_send_dm'),
     status: tools.get('bili_touch_status'),
   }
 }
@@ -125,7 +126,7 @@ await t('上限超大值夹到硬上限', async () => {
   mount(home)
   writeCfg(home, { likePerDay: 1e9, favPerDay: 999, sharePerDay: 999, followPerDay: 999, dynamicPerDay: 999 })
   const s = await mount(home).status.execute({})
-  assert.deepEqual(s.limits, { ...HARD_MAX, folder: 2, total: 25, perTarget: 2 })
+  assert.deepEqual(s.limits, { ...HARD_MAX, dm: 5, folder: 2, total: 25, perTarget: 2 })
 })
 
 await t('DSH 配置脏值不炸：allowWrite:"yes" / likePerDay:{nested} / sharePerDay:"3"', async () => {
@@ -196,12 +197,12 @@ console.log('② 参数与闸门')
     assert.match(String((await m.dyn.execute({ text: '字'.repeat(201) })).error), /太长/)
   })
 
-  await t('status 结构稳定：5 个额度键 + hardMax 与代码一致', async () => {
+  await t('status 结构稳定：6 个额度键 + hardMax 与代码一致', async () => {
     const s = await m.status.execute({})
     assert.equal(s.ok, true)
-    assert.deepEqual(Object.keys(s.usedToday).sort(), ['dynamic', 'fav', 'follow', 'like', 'share'])
-    // dynamic 默认 1（硬上限 2）；其余额度默认即硬上限
-    assert.deepEqual(s.limits, { ...HARD_MAX, dynamic: 1, folder: 2, total: 25, perTarget: 2 })
+    assert.deepEqual(Object.keys(s.usedToday).sort(), ['dm', 'dynamic', 'fav', 'follow', 'like', 'share'])
+    // dynamic 默认 1（硬上限 2）；dm 默认 5（硬上限 10）；其余额度默认即硬上限
+    assert.deepEqual(s.limits, { ...HARD_MAX, dynamic: 1, dm: 5, folder: 2, total: 25, perTarget: 2 })
     assert.deepEqual(s.hardMax, HARD_MAX)
     assert.equal(s.ready, false)
     assert.match(String(s.reason), /凭证/)
@@ -421,6 +422,56 @@ print(json.dumps({"ok": True, "action": (sys.argv[1] if len(sys.argv) > 1 else N
     // 小写前缀 bv 仍会被规整成 BV，但后 10 位一个字符都不许动
     const r2 = await tools.get('bili_touch').execute({ action: 'like', bvid: 'bv1d8pU6xEZX' })
     assert.equal(r2.detail.argv[1], 'BV1d8pU6xEZX', `小写前缀归一后尾段被改了：${r2.detail.argv[1]}`)
+  })
+
+  await t('⭐ 发私信：只发给配置里的 dmUid，走 python dm 动作并单独记账（不占总互动额度）', async () => {
+    const home = stubHome('stub-dm1')
+    writeCfg(home, { allowWrite: true, dmUid: 472463484 })
+    process.env.DSH_HOME = home
+    const tools = new Map()
+    stubPlugin.apply({ tools: { register: (x) => tools.set(x.name, x) }, logger: { info: () => {} } }, {})
+    const r = await tools.get('bili_send_dm').execute({ text: '简报：今天看了 3 条' })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(r.to, 472463484)
+    assert.equal(r.usedToday, 1)
+    const s = await tools.get('bili_touch_status').execute({})
+    assert.equal(s.usedToday.dm, 1)
+    assert.equal(s.totalUsed, 0, '私信不该占用公开互动的总次数')
+    assert.equal(s.dmLimitToday > 0, true)
+  })
+
+  await t('发私信：额度 0 → 直接拒绝（不 spawn python）', async () => {
+    const home = stubHome('stub-dm2')
+    writeCfg(home, { allowWrite: true, dmPerDay: 0 })
+    process.env.DSH_HOME = home
+    const tools = new Map()
+    const r0 = await (async () => {
+      stubPlugin.apply({ tools: { register: (x) => tools.set(x.name, x) }, logger: { info: () => {} } }, {})
+      return tools.get('bili_send_dm').execute({ text: 'x' })
+    })()
+    assert.equal(r0.ok, false)
+    assert.match(String(r0.error), /额度|上限/)
+  })
+
+  await t('发私信：dmUid=0 → 拒绝并提示改配置', async () => {
+    const home = stubHome('stub-dm3')
+    writeCfg(home, { allowWrite: true, dmUid: 0 })
+    process.env.DSH_HOME = home
+    const tools = new Map()
+    stubPlugin.apply({ tools: { register: (x) => tools.set(x.name, x) }, logger: { info: () => {} } }, {})
+    const r = await tools.get('bili_send_dm').execute({ text: 'x' })
+    assert.equal(r.ok, false)
+    assert.match(String(r.error), /dmUid|收件人/)
+  })
+
+  await t('发私信：text 非字符串直接拒绝', async () => {
+    const home = stubHome('stub-dm4')
+    process.env.DSH_HOME = home
+    const tools = new Map()
+    stubPlugin.apply({ tools: { register: (x) => tools.set(x.name, x) }, logger: { info: () => {} } }, {})
+    const r = await tools.get('bili_send_dm').execute({ text: { evil: 1 } })
+    assert.equal(r.ok, false)
+    assert.match(String(r.error), /字符串/)
   })
 
   await t('⭐ 同一视频每日上限：默认 2 次，第 3 次被拒（防被内容诱导后反复动手）', async () => {

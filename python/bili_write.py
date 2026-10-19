@@ -44,6 +44,7 @@ ACTION_LABEL = {
     "follow": "关注",
     "unfollow": "取关",
     "dynamic": "发动态",
+    "dm": "发私信",
     "following_updates": "查看关注更新",
     "fav_folders": "查看收藏夹",
 }
@@ -467,6 +468,40 @@ async def do_dynamic(cred, text: str, at: str = "") -> dict:
     }
 
 
+async def do_dm(cred, text: str, uid: int) -> dict:
+    """给指定 UID 发一条纯文本私信（B站 站内私信）。
+
+    ⚠️ 为什么放在本插件里：先辈插件（dsh-bili-scroll）的 MCP 半端虽然有 send_message，
+    但它没有把私信工具暴露给 headless 值班会话，所以「跑一轮」时发不出私信。
+    我们在自己的插件里补上，值班轮就能用它把简报私信给使用者（uid 从配置来，不接受任意目标）。
+    """
+    from bilibili_api import session
+
+    text = (text or "").strip()
+    if not text:
+        raise RuntimeError("私信正文是空的")
+    if len(text) > 500:
+        raise RuntimeError(f"私信正文太长（{len(text)} 字，本插件上限 500 字）")
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError):
+        raise RuntimeError(f"接收者 uid 不是数字：{uid!r}")
+    if uid <= 0:
+        raise RuntimeError("接收者 uid 不对（必须是正整数）")
+
+    res = await session.send_msg(
+        cred, receiver_id=uid, msg_type=session.EventType.TEXT, content=text
+    ) or {}
+    # bilibili_api 的 Api 已解包 data：这里通常是 {"msg_key": ..., "msg_seqno": ...}
+    data = res if isinstance(res, dict) else {}
+    return {
+        "action": "dm",
+        "to": uid,
+        "api_code": data.get("code"),
+        "msg_key": str(data.get("msg_key")) if data.get("msg_key") is not None else None,
+    }
+
+
 def _flag_int(argv, flag, default, lo, hi):
     """从 argv 里取 `--flag <int>`；没有/不合法就回默认值，并夹在 [lo, hi]。"""
     try:
@@ -512,8 +547,8 @@ def main(argv) -> int:
     uid = _flag_int(argv, "--uid", 0, 0, 10**18)
 
     # 第一个位置参数是 target（bvid / 正文）；正文本身可以含 "--at" 字样，所以只从它后面解析 flag
-    if action == "dynamic":
-        # 动态正文可能以 -- 开头，不能按 flag 前缀判断：正文永远是 argv[2]
+    if action in ("dynamic", "dm"):
+        # 动态/私信正文可能以 -- 开头，不能按 flag 前缀判断：正文永远是 argv[2]
         target = str(argv[2]) if len(argv) > 2 else ""
         raw = argv[3:]
     else:
@@ -563,6 +598,8 @@ def main(argv) -> int:
             out = await do_follow(cred, target, uid=uid, undo=(action == "unfollow") or undo)
         elif action == "dynamic":
             out = await do_dynamic(cred, target, at=_flag_str(argv[3:] if action == "dynamic" else argv, "--at"))
+        elif action == "dm":
+            out = await do_dm(cred, target, uid=uid)
         elif action == "following_updates":
             out = await do_following_updates(
                 cred,
